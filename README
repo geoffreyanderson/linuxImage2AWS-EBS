@@ -1,0 +1,1 @@
+A BASH script to push an image file with a Linux operating system to Amazon's Web Service cloud infrastructure as both an S3-backed instance and EBS-backed instance.
