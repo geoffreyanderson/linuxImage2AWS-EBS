@@ -1,0 +1,1137 @@
+#!/bin/bash
+# Create the Bundle
+
+# DEPENDENCIES:
+# s3cmd: http://s3tools.org/download
+
+#################
+# Parameters	#
+#################
+
+# Location of Tim Kay's AWS perl script. This is needed to manage the S3 buckets
+# during the execution of the script.
+s3Cmd=/home/geoff/apps/bin/s3cmd
+
+# Array containing a list of all functions in this script that can
+# be executed.  
+buildAwsFuncs[0]="bundle"
+buildAwsFuncs[1]="upload"
+buildAwsFuncs[2]="register"
+buildAwsFuncs[3]="startInstance"
+buildAwsFuncs[4]="testRunningInstance"
+buildAwsFuncs[5]="uploadConversionScript"
+buildAwsFuncs[6]="createVolume"
+buildAwsFuncs[7]="attachVolume"
+buildAwsFuncs[8]="convertToEBS"
+buildAwsFuncs[9]="detachVolume"
+buildAwsFuncs[10]="createSnapshotFromVolume"
+buildAwsFuncs[11]="registerEbsAmi"
+buildAwsFuncs[12]="removeInstanceAndVolume" 
+
+# Prefix for the directory and file names of the locally created files for EC2 
+# and also be the s3 bucket to be used.  Note: This should NOT containt underscores
+# (use dashes instead) and should not be empty. In the case of an empty string, 
+# auto generate "dblaboracle-mmddyyyy-hhmm"
+# (e.g. dblaboracle-04112011)
+prefix=
+
+# Region on AWS EC2 to deploy the image on. Default this to us-east-1
+# (may need to consider us-east-1{a,b,c,d} for continued work to convert the instance to EBS)
+region=
+
+# Local destination to store the generated files from the base image. This depends on the 
+# prefix specified above
+localDest=
+
+# Architecture we're building. Generally i386 unless a 64-bit image is used
+arch=
+
+# Location to upload bundle. This can probably be calculated by using sed on the region then
+# making it caps. Alternatively, maybe have a lookup table/file with this info? >:{ 
+# possible locations: EU       , US	  , us-west-1, ap-southeast-1, ap-northeast-1 
+# associated regions: eu-west-1, us-east-1, us-west-1, ap-southeast-1, ap-northeast-1
+location=
+
+# Private key for SSH connections
+privateKey=
+privateKeyLocation=
+
+# User ID for the AWS account to deploy this image to.
+userId=
+# Private certificate file for signing
+certFile=
+# Private key file for signing
+pkFile=
+# Access Key for account
+accessKey=
+# Secret Key for account
+secretKey=
+
+# Location of instance conversion script
+instanceConversionScript=
+
+# Debug verbosity
+verbosity=
+
+# Entry point for the script. If this isn't set, perform all operations
+startPoint=
+
+# Determines if the script should only run one operation (specified in startPoint)
+# or not. Valid values are 1 or 0
+doesEnd=
+
+# TODO: comment these variables. These are the other "global" variables needed by the functions
+
+# Holds the AMI number returned during instance-store AMI registration. This will be set
+# by the script
+amiNum=
+
+# Holds the public DNS (hostname/IP address) to a running instance-store AMI. This will be
+# set by the script
+publicDNS=
+
+# Holds the availability zone for a running instance-store AMI. This is needed so the 
+# volume is created in the correct zone. This will be set by the script
+availZone=
+
+# Holds the volume ID for a created volume. This will be set by the script.
+volId=
+
+# Holds the instance ID of a running instance-store AMI. This will be set by the script.
+instanceId=
+
+# Holds the snapshot ID for the snapshot of a volume that contains a copy of the 
+# instance-store's filesystem. This will be set by the script.
+snapId=
+
+# Determines if script execution should terminate any running instances on failure
+terminateOnFailure=1
+
+# Determines if script should prompt user about variable settings
+autoAccept=0
+
+# Kernel ID to use when bundling image
+kernelId=
+
+# Ramdisk ID to use when bundling image
+ramdiskId=
+
+#############
+# Functions #
+#############
+
+# Display usage information for this program
+usage()
+{
+    cat << EOF
+usage: $0 [options] imageFile.raw
+
+This script will build and deploy an AWS instance using a RAW virtual disk and then re-build/deploy the AWS instance as an EBS-backed instance.
+
+OPTIONS:
+    -h Show this message
+    -p prefix
+    --prefix prefix
+	prefix for directories and S3 Bucket to store the instance-store AMI
+    -r region
+    --region region
+	region to build/deploy this AMI on (run ec2-describe-regions for a list of these)
+    --location location
+	location to deploy this AMI on (this must be in sync with the region you're deploying to)
+    -d directory
+    --destination directory
+	directory to store locally created files to deploy to AWS
+    -a arch
+    --arch arch
+	architecture to build (i386 or x86_64)
+    -k privateKey
+    --private-key privateKey
+	private key to use when connecting to a running AMI (this will be used in order to tell an instance-store AMI to rebuild itself as an EBS-backed AMI)
+    -l /some/privateKey.pem
+    --private-key-location /some/privateKey.pem
+	location of the private key specified with the -k operator. This will default to $HOME/privateKeySpecified.pem
+    -u 000000000000
+    --user-id 000000000000
+	AWS user ID. This will default to the RIT account user id
+    -c /some/cert-xxxxx.pem
+    --cert-file /some/cert-xxxxx.pem
+	location of the x.509 certificate file to be used for signing the AMI
+    -n /some/pk-xxxxx.pem
+    --pk-file /some/pk-xxxxx.pem
+	location of the private key file to be used for signing the AMI
+    -x XXXXXXXXXXXXXXXXXXXXX
+    --access-key XXXXXXXXXXXXXXXXXXXXX
+	AWS access key (used for bundling)
+    -s xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    --secret-key xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+	AWS secret key (used for bundling)
+    --conversion-script-location /some/script.sh
+	Location of the instance-to-ebs-ami.sh script to uplaod to the instance.
+    -v verbosity
+    --verbose verbosity
+	a number indicating how verbose the application should be
+    --start point
+	a value indicating the starting point for execution. Legal values are:
+	    * bundle -- begin bundling a raw image file
+	    * upload -- begin uploading a bundled image
+	    * register -- register an image uploaded to S3
+	    * startInstance -- start an instance of a given AMI
+	    * testRunningInstance -- test that a running instance can receive a connection
+	    * uploadConversionScript -- upload the EBS conversion script to a running instance
+	    * createVolume -- create a volume needed for EBS conversion
+	    * attachVolume -- attach a volume to a running instance for EBS conversion
+	    * convertToEBS -- run the EBS conversion script on a given instance
+	    * detachVolume -- detach a volume containing the files from a running instance
+	    * createSnapshotFromVolume -- create a snapshot from a detached volume
+	    * registerEbsAmi -- register an EBS AMI with an existing snapshot
+	    * removeInstanceAndVolume -- terminates a running instance and associated volume
+    --one-func
+	Used in conjuction with the --start parameter to run only the function specified
+
+    --ami ami-a1b2c3d4
+	AMI number of an instance-store AMI to package into an EBS ami. This requires that the start parameter is set to startInstance or later.
+    --public-dns ec2-123-456-789-012.compute-1.amazonaws.com
+	Public DNS to a running AMI. This requires that the start parameter is set to testRunningInstance or later. 
+    --avail-zone us-east-1a
+	Availability zone of a running AMI. This requires that the start parameter is set to testRunningInstance or later.
+    --instance-id i-1234abcd
+	Instance ID of a running AMI. This requires that the start parameter is set to testRunningInstance or later.
+    --vol-id vol-a1b2c3d4
+	Volume ID of a volume to be attached to a running instance-store AMI. This requires that the start parameter is set to attachVolume or later.
+    --snap-id snap-a1b2c3d4
+	Snapshot ID of a snapshot that has been created from a volume that was synchronized with an instance-store AMI. This requires that the start parameter is set to RegisterEbsAmi or later.
+    --no-terminate
+	Prevents the script from terminating any instances it starts. This is useful if you need to examine a running instance to further determine any encountered failures.
+    -y
+	Auto-accepts all parameters, default or not,  without prompting the user.
+
+EOF
+}
+
+displayVariables()
+{
+    # Inform the user of their settings
+    cat << EOF
+Deploying your image to AWS with the following parameters:
+    image		    =	$imageFile
+    prefix		    =	$prefix
+    region		    =	$region
+    location		    =	$location
+    local destination	    =	$localDest
+    architecture	    =	$arch
+    private key		    =	$privateKey
+    private key location    =	$privateKeyLocation
+    user id		    =	$userId
+    certificate file	    =	$certFile
+    pk file		    =	$pkFile
+    access key		    =	$accessKey
+    secret key		    =	$secretKey
+    conversion script	    =	$instanceConversionScript
+    start point		    =	$startPoint
+    run one function	    =	$doesEnd
+
+EOF
+
+
+}
+
+# TODO: add function(ality) to print "important information" to user when script exits. E.g., if script fails/exits after uploading bundle, print all variables needed to continue the process from another point. (This could probabaly just be the same dumping of variables from the start of the script when prompting the user to run.)
+# TODO: add a severity parameter to the exitReason() function so that certain errors can have a higher severity -- e.g. failing to get instanceID should have the highest error severity because it means there may be an instance running that the script can't terminate -- maybe this fires off an emergency e-mail.
+# exits with a given exit status and reason
+exitReason()
+{
+    if [[ $# -ne 2 ]]; then
+	echo "Error: exitReason() called with bad arguments. Dumping supplied arguments and exiting..."
+	echo "arguments: $@"
+	exit 1
+    fi
+    echo "-----------------------"
+    echo -e "Error: $1"
+    echo "Exiting..."
+    exit $2
+}
+
+# Checks if a given function that is passed in exists in the list of
+# available functions to be executed
+# Returns:
+awsFuncExists()
+{
+    if [ -z "$1" ]; then
+	return -1
+    fi
+    local ele="$1"
+    
+    for (( awsFuncExistsIteration=0; awsFuncExistsIteration<${#buildAwsFuncs[@]}; awsFuncExistsIteration++))
+    do
+	if [ ${buildAwsFuncs[$awsFuncExistsIteration]} == $ele ]; then
+	    return $awsFuncExistsIteration
+	fi
+    done
+    
+    return -1
+}
+
+
+# execute a given command a specified number of times
+limitedRetry()
+{
+    if [[ $# -ne 4 ]]; then
+	exitReason "Error: limitedRetry() called with bad arguments. Dumping supplied arguments and exiting...\narguments: $@" 1
+    fi
+    local commandToRun=$1
+    local numIterations=$2
+    local failMessage=$3
+    local successMessage=$4
+    local exitStatus=1
+
+    echo "Will attempt to run the following command: $commandToRun"
+    # doing this style for loop b/c you can't plug in a variable in the "for i in {}" notation
+    for (( limitedRetryIteration=1; limitedRetryIteration<=$numIterations; limitedRetryIteration++))
+    do
+	$commandToRun
+	exitStatus="$?"
+	if [ $exitStatus -ne 0 ];then
+	    local failureMessage="$failMessage"
+	    if [ $limitedRetryIteration -lt $numIterations ]; then
+		failureMessage="$failureMessage  Retrying..."
+	    fi
+	    echo $failureMessage
+	else
+	    echo $successMessage
+	    break
+	fi
+    done
+    return $exitStatus
+}
+
+# Execute a given command until a threshold is met -- used for watching an incremental process
+# TODO: should consider adding a counter that gets multiplied by the sleep time. If that value surpasses a certain threshold (e.g. 15min), then the script should error out.
+monitorEC2Command()
+{
+    if [[ $# -ne 7 ]]; then
+	exitReason "Error: monitorEC2Command() called with bad arguments. Dumping supplied arguments and exiting...\narguments: $@" 1
+    fi
+
+    local ec2Cmd=$1
+    local waitFilter=$2
+    local finishedFilter=$3
+    local fileToOperate=$4
+    local failMessage=$5
+    local successMessage=$6
+    local sleepTime=$7
+    local failed=1
+
+    # Loop until the "finishedFilter" condition is met. This is when the operation is
+    # successful. Otherwise, continue looping unless an error is encountered.
+    while true; do
+	eval "$ec2Cmd --filter $waitFilter > $fileToOperate"
+	if [ -z "$(cat $fileToOperate)" ]; then
+	    eval "$ec2Cmd --filter $finishedFilter > $fileToOperate"
+	    if [ -z "$(cat $fileToOperate)" ]; then
+		# failed
+		failed=1
+		echo "$failMessage"
+		break
+	    else
+		# worked
+		failed=0
+		echo "$successMessage"
+		break
+	    fi
+	fi
+	sleep $sleepTime
+    done
+
+    return $failed
+}
+
+checkForConsoleOutput()
+{
+    echo "Checking for console output..."
+    consoleOutputFile=$(mktemp)
+    while true; do
+	ec2-get-console-output $instanceId > $consoleOutputFile
+	if [ -n "$(cat $consoleOutputFile | sed 1d | sed 1d)" ]; then
+	    echo "-->Writing console output to STDOUT and $prefix.console.out"
+	    cat $consoleOutputFile
+	    cp $consoleOutputFile $prefix.console.out
+	    break
+	fi
+	sleep 20
+    done
+    rm $consoleOutputFile
+    return 0
+}
+
+# Create the bundle from the image file for upload
+# (requires: $imageFile, $prefix, $certFile, $pkFile, $userId, $localDest, $arch)
+# (global changes: none)
+bundle()
+{
+
+    echo "Creating directory to store bundle..."
+    mkdir -p $localDest
+    echo "Finished creating directory."
+    echo -e "------------------------\n"
+    echo "Bundling \"$imageFile\" in the following directory:"
+    echo "-->$localDest"
+    echo -e "------------------------\n"
+
+    # TODO: tweak the conditional so the command it built dynamically -- save on duplicate code
+    # Bundle the specified image into the local destination
+    if [ -z "$kernelId" ]; then
+	ec2-bundle-image --image $imageFile --prefix $prefix --cert $certFile --privatekey $pkFile --user $userId --destination $localDest --arch $arch 
+    else
+	ec2-bundle-image --image $imageFile --prefix $prefix --cert $certFile --privatekey $pkFile --user $userId --destination $localDest --arch $arch --kernel $kernelId
+    fi
+
+    # TODO: need to check all exit statuses for ec2-bundle-image to see if certain errors can be recovered/continued from.
+    if [[ $? -ne 0 ]]; then
+	exitReason "Error encountered when bundling $imageFile." 2
+    fi
+
+    echo "Bundling complete."
+    echo -e "------------------------\n"
+    return 0
+}
+
+# Upload the bundled imaged to AWS S3
+# (requires: $s3Cmd, $prefix, $localDest, $accessKey, $secretKey, $location)
+# (global changes: none)
+upload()
+{
+    # Check that the S3 bucket matching the specified prefix doesn't exist.
+    # If it doesn't, create it. If it does, raise an error.
+    echo "------------------------"
+    echo "Checking if S3 bucket \"$prefix\" exists..." 
+    bucket=$($s3Cmd --bucket-location=$location ls | grep "$prefix")
+    if [ -z "$bucket" ]; then
+        echo "-->S3 bucket \"$prefix\" does not exist, creating..." 
+        #$($s3Cmd mkdir "$prefix")
+        local s3CreateOutput=$($s3Cmd --bucket-location=$location mb "s3://$prefix")
+	local s3CreateExitStatus="$?"
+	if [[ $verbosity -gt 0 ]]; then
+	    echo "$s3CreateOutput"
+	fi
+        if [ $s3CreateExitStatus -ne 0 ]; then
+	    # If there's an error in creating the S3 Bucket, it's safe to assume the error
+	    # was probably trying to create an existing bucket.
+	    # TODO: check exit statuses from "$s3Cmd mkdir" to see if an error is recoverable
+	    exitReason "Error encountered when creating S3 bucket with prefix \"$prefix\". Exit status was $s3CreateExitStatus.  Try with a different prefix." 3
+        fi
+        echo "-->S3 bucket \"$prefix\" created."
+    else
+	# TODO: should use a "force" flag here instead of auto-accept
+	if [[ $autoAccept -ne 1 ]]; then
+	    # TODO: Is it really an error if the prefix already exists?
+	    exitReason "S3 bucket \"$prefix\" exists. Try with a different prefix." 3
+	fi
+    fi
+    
+    echo -e "------------------------\n"
+    
+    # Upload the bundled image
+    echo "------------------------"
+    echo "Uploading image in \"$localDest\" to S3..."
+    ec2-upload-bundle --manifest $localDest/$prefix.manifest.xml --bucket $prefix --access-key $accessKey --secret-key $secretKey --location $location --retry
+    
+    local uploadBundleExit="$?"
+    # TODO: need to check all exit statuses for ec2-upload-bundle to see if certain errors can be recovered/continued from. (e.g. can restart command with --part to resume from a certain part if it failed.)
+    if [ $uploadBundleExit -ne 0 ]; then
+        exitReason "Error encountered when uploading bundle. Exit status: $uploadBundleExit." 4
+    fi
+    
+    echo "Image successfully uploaded"
+    echo -e "------------------------\n"
+    return 0
+}
+
+# Register the bundled image (store $amiNum)
+# (requires: $prefix)
+# (global changes: $amiNum)
+register()
+{
+    # register the bundled image and store the output in $amiNum
+    echo "------------------------"
+    echo "Attempting to register \"$prefix/$prefix.manifest.xml\""
+    # TODO: should check if the --kernel parameter below is necessary after bundling with a specified kernel
+    amiRegister=$(ec2-register $prefix/$prefix.manifest.xml)
+#    if [ -z "$kernelId" ]; then
+#	amiRegister=$(ec2-register $prefix/$prefix.manifest.xml)
+#    else
+#	amiRegister=$(ec2-register $prefix/$prefix.manifest.xml --kernel $kernelId)
+#    fi
+
+    # Extract the ami number from the output of ec2-register
+    amiNum=$(echo $amiRegister | awk '{print $2}')
+
+    # If the $amiNum variable is empty, something probably went wrong. Print error and exit
+    if [ -z "$amiNum" ]; then
+	exitReason "Failed to register AMI. Output from ec2-register:\n$amiRegister" 5
+    else
+	echo "Registered $prefix/$prefix.manifest.xml:"
+	echo "-->$amiRegister"
+    fi
+    echo -e "------------------------\n"
+    return 0
+}
+
+# Start up an instance for conversion to EBS (requires $amiNum
+# (requires: $amiNum, $privateKey, $region)
+# (global changes: $publicDNS, $availZone, $instanceId)
+startInstance()
+{
+    # start the instance using the keypair passed in
+    echo "------------------------"
+    echo "Attempting to launch instance of \"$amiNum\" with private key \"$privateKey\" on the \"$region\" region"
+    runInstance=$(ec2-run-instances $amiNum --instance-type m1.small -k $privateKey --region $region)
+
+    # Extract the instance id from the ec2-run-instances command
+    instanceId=$(echo $runInstance | awk '{print $6}')
+
+    # If $instanceId is empty, something probably went wrong. Print error and exit.
+    if [ -z "$instanceId" ]; then
+        exitReason "Failed to retrieve instance ID. Output from ec2-run-instances:\n$runInstance" 6
+    else
+        echo "Started $amiNum successfully."
+        echo "-->Instance ID: $instanceId"
+    fi
+    echo -e "------------------------\n"
+    
+    # Keep checking this instance's status until it is running. Once it's running, extract
+    # the public DNS (address we need to connect to it) and the availability zone
+    echo "------------------------"
+    echo "Checking if instance \"$instanceId\" is running..."
+    instanceDescription=$(mktemp)
+    publicDNS=
+    availZone=
+    # TODO: check to verify the availZone is valid (either non-empty, or cross-check it against the region and valid avail zones).
+    monitorEC2Command "ec2-describe-instances $instanceId" "instance-state-name='pending'" "instance-state-name='running'" $instanceDescription "Can't detect pending or running state...there must be a problem." "" 10
+    if [[ $? -ne 0 ]]; then
+	if [ "$terminateOnFailure" -eq 1 ]; then
+	    exitReason "Dumping current state, attempting to terminate, and exiting:\n$(ec2-describe-instances $instanceId)\n$(ec2-terminate-instances $instanceId)" 7
+	else
+	    exitReason "Dumping current state, and exiting:\n$(ec2-describe-instances $instanceId)" 7
+	fi
+    fi
+
+    # Get the public dns and availability zone by removing the first line in the output file
+    # and then printing the appropriate space-delimited string token
+    publicDNS=$(cat $instanceDescription | sed 1d | awk '{print $4}')
+    availZone=$(cat $instanceDescription | sed 1d | awk '{print $11}')
+    rm $instanceDescription
+    echo "Instance \"$instanceId\" is running!"
+    echo "-->Public DNS: $publicDNS"
+    echo "-->Availability Zone: $availZone"
+    echo -e "------------------------\n"
+    return 0
+}
+
+# Tests that the running instance can be connected to via SSH
+# will also dump the console output
+# (requires: $instanceId, $privateKeyLocation, $publicDNS)
+# (global changes: none)
+testRunningInstance()
+{
+    # now try to connect with the keypair. 
+    # if it fails, you'll get something like this:
+    # ssh: connect to host ec2-50-17-103-5.compute-1.amazonaws.com port 22:
+    # Connection timed out
+
+    echo "------------------------"
+    checkForConsoleOutput
+    echo "Attempting to SSH to instance \"$instanceId\" with the following parameters:"
+    echo "-->Public DNS: $publicDNS"
+    echo "-->Private Key File: $privateKeyLocation"
+    echo -e "\n"
+
+    # Call the limitedRetry() function to "retry" the SSH command 5 times (in case the 
+    # instance's SSH daemon hasn't yet started even though the instance is listed as "running")
+    # The two -o flags allow SSH to bypass the host key verification (for automation-sake)
+    # -StrictHostKeyChecking: adds the host key check without prompt
+    # -UserKnownHostFile: Set to /dev/null so you don't add auto-accepted host keys to your actual host file.
+    limitedRetry "ssh -i $privateKeyLocation -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@$publicDNS 'exit'" 5 "Failed to connect." "Connection successful! Instance is up and running."
+
+    local workingConnection="$?"
+    # If the connection was not found to be successful from above, error out.
+    # TODO: should clean up how this error handling/exiting is done. Maybe create a new function just for processes such as this (where you need to terminate an instance and verify it terminated)
+    if [ $workingConnection -ne 0 ]; then
+	echo "Error detected in attempting to connect to instance."
+	if [ "$terminateOnFailure" -eq 1 ]; then
+	    echo ">Attempting to terminate..."
+	    ec2-terminate-instances $instanceId
+	    if [ $? -ne 0 ]; then
+		exitReason "Error terminating instance $instanceId. Please check the AWS Console." 8
+	    fi
+	    exitReason "Instance terminated. Please review the output from above to determine what issue was encountered" 9
+	fi
+	exitReason "Please review the output from above to determine what issue was encountered" 9
+    fi
+
+    echo -e "------------------------\n"
+    return 0
+}
+
+# Uploads the instance-to-ebs-ami.sh conversion script to a running instance.
+# (requires: $instanceId, $privateKeyLocation, $publicDNS, $instanceConversionScript)
+# (global changes: none)
+uploadConversionScript()
+{
+    echo "------------------------"
+    echo "Uploading instance to EBS conversion script to instance \"$instanceId\" with the following parameters:"
+    echo "-->Public DNS: $publicDNS"
+    echo "-->Private Key File: $privateKeyLocation"
+    echo "-->Script to upload: $instanceConversionScript"
+    echo -e "\n"
+
+    # Attempt to SCP the conversion script until it uploads successfully (try a maximum of 5 times).
+    conversionScriptUploadSuccess=0
+    limitedRetry "scp -i $privateKeyLocation -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $instanceConversionScript root@$publicDNS:/root/instance-to-ebs-ami.sh" 5 "Failed to upload file." "Successfully uploaded $instanceConversionScript to $publicDNS:/root/instance-to-ebs-ami.sh."
+    conversionScriptUploadSuccess="$?"
+
+    if [ $conversionScriptUploadSuccess -ne 0 ]; then
+	echo "Failed to upload $instanceConversionScript."
+	if [ "$terminateOnFailure" -eq 1 ]; then
+	    echo ">Attempting to terminate ..."
+	    ec2-terminate-instances $instanceId
+	    if [ $? -ne 0 ]; then
+		exitReason "Error terminating instance $instanceId. Please check the AWS Console." 10
+	    fi
+	   exitReason "Instance terminated. Please review the output from above to determine what issue was encountered." 11
+       fi
+	   exitReason "Please review the output from above to determine what issue was encountered." 11
+    fi
+
+    echo -e "------------------------\n"
+    return 0
+}
+
+# creates a volume to be attached to an instance
+# (requires: $availZone, $instanceId)
+# (global changes: $volId)
+createVolume()
+{
+    echo "------------------------"
+    echo "Preparing to setup a volume for the script to operate on."
+    echo "-->Creating a volume..."
+    
+    # Arbitrarily make a 20GB volume. May change this to a variable in the future
+    local createVolume=$(ec2-create-volume --size 20 --availability-zone $availZone)
+    local createVolumeExitStatus="$?"
+    if [ $createVolumeExitStatus -ne 0 ]; then
+	exitReason "Error creating volume.  Exit Status was $createVolumeExitStatus.  Displaying output from create volume command and exiting:\n$createVolume" 12
+    fi
+
+    # Get the volume ID from the creation
+    volId=$(echo $createVolume | awk '{print $2}')
+    if [ -z "$volId" ]; then
+	if [ "$terminateOnFailure" -eq 1 ]; then
+	    exitReason "Failed to retrieve valid volume ID. Terminating instance \"$instanceId\", dumping create volume command, and exiting:\n$createVolume\n$(ec2-terminate-instances $instanceId)" 13
+	else
+	    exitReason "Failed to retrieve valid volume ID. Dumping create volume command and exiting:\n$createVolume" 13
+	fi
+    fi
+
+    echo "-->Volume \"$volId\" created."
+    echo "-->Checking if \"$volId\" is ready..."
+    volumeDescription=$(mktemp)
+
+    # Monitor the status of the volume until its status is "available"
+    monitorEC2Command "ec2-describe-volumes $volId" "status='creating'" "status='available'" $volumeDescription "Can't detect state of volume...there must be a problem." "" 10
+    if [[ $? -ne 0 ]]; then
+	if [ "$terminateOnFailure" -eq 1 ]; then
+	    exitReason "Dumping current state, attempting to terminate, and exiting: \n$(ec2-describe-volumes $volId)\n$(ec2-terminate-instances $instanceId)" 14
+	else
+	    exitReason "Dumping current state, and exiting: \n$(ec2-describe-volumes $volId)" 14
+	fi
+    fi
+
+    # Delete the temporary file
+    rm $volumeDescription
+    echo "-->Volume \"$volId\" created and ready."
+    echo -e "------------------------\n"
+    return 0
+}
+
+# attaches a volume to the running instance for the conversion process
+# (requires: $volId, $instanceId)
+# (global changes: none)
+attachVolume()
+{
+    echo "------------------------"
+    echo "Preparing to attach volume \"$volId\" to instance \"$instanceId\""
+    echo "-->Attaching..."
+
+    # Now to attach the volume and check for a valid attachment state
+    attachVolume=$(ec2-attach-volume $volId --instance $instanceId --device "/dev/sdh")
+
+    attachedDescription=$(mktemp)
+
+    # Monitor the volume until it's attachment status is listed as "attached"
+    monitorEC2Command "ec2-describe-volumes $volId" "attachment.status='attaching'" "attachment.status='attached'" $attachedDescription "Can't detect if volume attached...there must be a problem." "" 10
+    if [[ $? -ne 0 ]]; then
+	if [ "$terminateOnFailure" -eq 1 ]; then
+	    exitReason "Dumping current state, attempting to terminate, and exiting:\n$(ec2-describe-volumes $volId)\n$(ec2-terminate-instances $instanceId)" 16
+	else
+	    exitReason "Dumping current state, and exiting:\n$(ec2-describe-volumes $volId)" 16
+	fi
+    fi
+
+    # Remove the temporary file
+    rm $attachedDescription
+
+    echo "-->Attached!"
+    echo -e "------------------------\n"
+    return 0
+}
+
+# Runs the instance to EBS conversion process and checks that it succeeded.
+# (requires: $privateKeyLocation, $publicDNS, $instanceId)
+# (global changes: none)
+convertToEBS()
+{
+    echo "------------------------"
+    echo "Preparing to run the instance-->EBS conversion script."
+
+    # THE MAGIC -- run the instance-to-ebs-ami.sh script on the instance
+    # Run the instance-to-ebs-ami.sh script that we uploaded earlier
+    # TODO: need to find a way to successfully get the exit status of the following command
+    # from the remote session (not the exit status of the SSH session).
+    # tried: echo "exit status: $?" in the below string, but that changes randomly...
+    #	need to investigate
+    # Maybe try downloading the "instance-to-ebs-ami.out" file and checking it contents.
+    limitedRetry "ssh -i $privateKeyLocation -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@$publicDNS <<EOF
+/bin/bash /root/instance-to-ebs-ami.sh | tee /root/instance-to-ebs-ami.out;
+exit;
+EOF" 5 "Failed to connect and execute the script." "-->Successfully copied instance to EBS volume."
+    ebsConversionSuccess="$?"
+
+    if [ $ebsConversionSuccess -ne 0 ];then
+	echo "Failed to copy instance to EBS volume."
+	if [ "$terminateOnFailure" -eq 1 ]; then
+	    echo ">Attempting to terminate..."
+	    ec2-terminate-instances $instanceId
+	    if [ $? -ne 0 ]; then
+		exitReason "Error terminating instance $instanceId. Please check the AWS console." 18
+	    fi
+	    exitReason "Terminated.  Please review the output from above to determine what issue was encountered." 19
+	else
+	    exitReason "Please review the output from above to determine what issue was encountered." 19
+	fi
+    fi
+
+    echo -e "------------------------\n"
+    return 0
+}
+
+# Detach the volume cleanly since conversion should be complete
+# (requires: $volId, $instanceId)
+# (global changes: none)
+detachVolume()
+{
+    echo "------------------------"
+    echo "Preparing to detach the volume"
+
+    # Now to detach the volume
+    local detachVolume=$(ec2-detach-volume $volId)
+    local detachedDescription=$(mktemp)
+
+    # Keep checking the volume's status until it's listed as "available" (implying it's detached)
+    monitorEC2Command "ec2-describe-volumes $volId" "attachment.status='detaching'" "status='available'" $detachedDescription "Can't detect if volume detached cleanly...there must be a problem." "" 10
+    if [[ $? -ne 0 ]]; then
+	if [ "$terminateOnFailure" -eq 1 ]; then
+	    exitReason "Dumping current state, attempting to terminate, and exiting:\n$(ec2-describe-volumes $volId)\n$(ec2-terminate-instances $instanceId)" 20
+	else
+	    exitReason "Dumping current state and exiting:\n$(ec2-describe-volumes $volId)" 20
+	fi
+    fi
+    rm $detachedDescription
+    echo "-->Successfully detached volume \"$volId\""
+    echo -e "------------------------\n"
+    return 0
+}
+
+# Create a snapshot of the volume detached in the previous step
+# (requires: $volId, $instanceId)
+# (global changes: $snapId)
+createSnapshotFromVolume()
+{
+    echo "------------------------"
+    echo "Preparing to create a snapshot from volume \"$volId\""
+
+    # Snapshot the volume
+    local createSnapshot=$(ec2-create-snapshot $volId)
+    snapId=$(echo $createSnapshot | awk '{print $2}')
+    echo "-->Creating snapshot \"$snapId\""
+    snapshotDescription=$(mktemp)
+
+    # Monitor the snapshot creation until the status is listed as "completed"
+    monitorEC2Command "ec2-describe-snapshots $snapId" "status='pending'" "status='completed'" $snapshotDescription "-->Snapshot creation seems to have failed." "" 10
+    if [[ $? -ne 0 ]]; then
+	if [ "$terminateOnFailure" -eq 1 ]; then
+	    exitReason "Dumping snapshot information, terminating instance, and exiting:\n$(ec2-describe-snapshots $snapId)\n$(ec2-terminate-instances $instanceId)" 22
+	else
+	    exitReason "Dumping snapshot information and exiting:\n$(ec2-describe-snapshots $snapId)" 22
+	fi
+    fi
+    rm $snapshotDescription
+
+    echo "-->Snapshot \"$snapId\" created"
+    echo -e "------------------------\n"
+    return 0
+}
+
+# Registers an EBS ami using the snapshot from above
+# (requires: $snapId, $prefix, $arch)
+# (global changes: $ebsAmiNum)
+registerEbsAmi()
+{
+    echo "------------------------"
+    echo "Registering a new EBS-backed AMI with \"$snapId\""
+
+    # Register a new instance with the volume
+    ebsAmiRegister=$(ec2-register --snapshot $snapId --description="EBS version of $prefix" --name="EBS-$prefix" --architecture $arch --root-device-name /dev/sda1)
+    ebsAmiNum=$(echo $ebsAmiRegister | awk '{print $2}')
+    if [ -z "$ebsAmiNum" ]; then
+    	exitReason "Failed to register AMI. Output from ec2-register:\n$(echo "$ebsAmiRegister")" 23
+    else
+    	echo "-->Registered ebs ami: $ebsAmiRegister"
+    fi
+
+    echo -e "------------------------\n"
+    return 0
+}
+
+# Perform clean up -- terminate instance and delete volume
+# (requires: $instanceId, $volId)
+# (global changes: none)
+removeInstanceAndVolume()
+{
+    # Now we're all done, do some cleanup!
+    # TODO: check these commands for errors
+    echo "------------------------"
+    echo "Performing cleanup:"
+    echo "-->Terminating $instanceId:"
+    ec2-terminate-instances $instanceId
+    echo "-->Deleting $volId:"
+    ec2-delete-volume $volId
+    echo -e "------------------------\n"
+    return 0
+}
+
+# Main entry point of the script after parameters are parsed.
+main()
+{
+    # Set the EC2_URL variable according to the region so that bundling works correctly for non-US east regions.
+    export EC2_URL="https://$region.ec2.amazonaws.com"
+
+    # Ensure that the "startPoint" passed in is a valid function in the list of functions
+    awsFuncExists "$startPoint"
+    startPointIndex="$?"
+
+    # If the "startPoint" function is valid, then $startPointIndex should be 0 or greater
+    if [[ $startPointIndex -lt 0 ]]; then
+	exitReason "Error: Invalid start point passed in." 1
+    fi
+
+    # We have a valid startPoint. See if the user specified to only run this function.
+    if [[ $doesEnd -eq 1 ]]; then
+	$startPoint
+    else
+	# User didn't specify to run only the one function. Cascade through the rest of the functions.
+	for (( mainIteration=$startPointIndex; mainIteration<${#buildAwsFuncs[@]}; mainIteration++))
+	do
+	    echo "Running ${buildAwsFuncs[$mainIteration]}():"
+	    ${buildAwsFuncs[$mainIteration]}
+	done
+    fi
+}
+
+
+# Bring information from the config file first. 
+# Command-line parameters should override them this way
+source $HOME/.buildawsrc
+
+# TODO: at the end of the parameters loop, check that variables that are dependent on one another are set correctly
+
+# While loop adapted form example at http://mywiki.wooledge.org/BashFAQ/035
+# Using "set -u" causes the script to exit if there are incorrectly set variables in the loop
+set -u 
+if [[ $# -lt 1 ]]; then
+    echo "Error: not enough parameters"
+    usage
+    exit 1
+fi
+while [[ $1 == -* ]]; do
+    case "$1" in
+        -h|-\?|--help)  usage
+            exit 0;;
+        -p|--prefix)
+            if (($# > 1)); then
+                prefix="$2"; shift 2
+            else
+                echo "$1 requires an argument" 2>&1
+                exit 1
+            fi ;;
+        -r|--region)
+	    if (($# > 1)); then
+		region="$2"; shift 2
+	    else
+		echo "$1 requires an argument" 2>&1
+		exit 1
+	    fi ;;
+	--location)
+	    if (($# > 1)); then
+		location="$2"; shift 2
+	    else
+		echo "$1 requires an argument" 2>&1
+		exit 1
+	    fi ;;
+        -d|--destination)
+	    if (($# > 1)); then
+		localDest="$2"; shift 2
+	    else
+		echo "$1 requires an argument" 2>&1
+		exit 1
+	    fi ;;
+        -a|--arch)
+	    if (($# > 1)); then
+		arch="$2"; shift 2
+	    else
+		echo "$1 requires an argument" 2>&1
+		exit 1
+	    fi ;;
+        -k|--private-key)
+	    if (($# > 1)); then
+		privateKey="$2"; shift 2
+	    else
+		echo "$1 requires an argument" 2>&1
+		exit 1
+	    fi ;;
+        -l|--private-key-location)
+            if (($# > 1)); then
+                privateKeyLocation="$2"; shift 2
+            else
+                echo "$1 requires an argument" 2>&1
+                exit 1
+            fi ;;
+        -u|--user-id)
+            if (($# > 1)); then
+                userId="$2"; shift 2
+            else
+                echo "$1 requires an argument" 2>&1
+                exit 1
+            fi ;;
+        -c|--cert-file)
+            if (($# > 1)); then
+                certFile="$2"; shift 2
+            else
+                echo "$1 requires an argument" 2>&1
+                exit 1
+            fi ;;
+        -n|--pk-file)
+            if (($# > 1)); then
+                pkFile="$2"; shift 2
+            else
+                echo "$1 requires an argument" 2>&1
+                exit 1
+            fi ;;
+        -x|--access-key)
+            if (($# > 1)); then
+                accessKey="$2"; shift 2
+            else
+                echo "$1 requires an argument" 2>&1
+                exit 1
+            fi ;;
+        -s|--secret-key)
+            if (($# > 1)); then
+                secretKey="$2"; shift 2
+            else
+                echo "$1 requires an argument" 2>&1
+                exit 1
+            fi ;;
+        -v|--verbose)
+            if (($# > 1)); then
+                verbosity="$2"; shift 2
+            else
+                echo "$1 requires an argument" 2>&1
+                exit 1
+            fi ;;
+	--start)
+	    if (($# > 1)); then
+		startPoint="$2"; shift 2
+	    else
+		echo "$1 requires an argument" 2>&1
+	    fi ;;
+	--one-func)
+	    if (($# > 1)); then
+		doesEnd="$2"; shift 2
+	    else
+		echo "$1 requires an argument" 2>&1
+	    fi ;;
+	--conversion-script-location)
+	    if (($# > 1)); then
+		instanceConversionScript="$2"; shift 2
+	    else
+		echo "$1 requires an argument" 2>&1
+	    fi ;;
+	--ami)
+	    if (($# > 1)); then
+		amiNum="$2"; shift 2
+	    else
+		echo "$1 requires an argument" 2>&1
+	    fi ;;
+	--public-dns)
+	    if (($# > 1)); then
+		publicDNS="$2"; shift 2
+	    else
+		echo "$1 requires an argument" 2>&1
+	    fi ;;
+	--avail-zone)
+	    if (($# > 1)); then
+		availZone="$2"; shift 2
+	    else
+		echo "$1 requires an argument" 2>&1
+	    fi ;;
+	--instance-id)
+	    if (($# > 1)); then
+		instanceId="$2"; shift 2
+	    else
+		echo "$1 requires an argument" 2>&1
+	    fi ;;
+	--vol-id)
+	    if (($# > 1)); then
+		volId="$2"; shift 2
+	    else
+		echo "$1 requires an argument" 2>&1
+	    fi ;;
+	--snap-id)
+	    if (($# > 1)); then
+		snapId="$2"; shift 2
+	    else
+		echo "$1 requires an argument" 2>&1
+	    fi ;;
+	--no-terminate)
+	    terminateOnFailure=0; shift 1 ;;
+	--kernel)
+	    if (($# > 1)); then
+		kernelId="$2"; shift 2
+	    else
+		echo "$1 requires an argument" 2>&1
+	    fi ;;
+	--ramdisk)
+	    # TODO: this parameter is currently unused.
+	    if (($# > 1)); then
+		ramdiskId="$2"; shift 2
+	    else
+		echo "$1 requires an argument" 2>&1
+	    fi ;;
+	-y)
+	    autoAccept=1; shift 1 ;;
+	--) shift; break;;
+	-*) echo "invalid option: $1" 1>&2; usage; exit 1;;
+	*) break ;;
+    esac
+    if ! test "${1+defined}"; then
+        break
+    fi
+done
+
+if [ -z "$prefix" ]; then
+    prefix="awsImage-$(date +%m%d%y-%H%M)"
+fi
+if [ -z "$region" ]; then
+    region="us-east-1"
+    location=US
+fi
+if [ -z "$localDest" ]; then
+    localDest="$HOME/awsStorage/$prefix"
+fi
+if [ -z "$arch" ]; then
+    arch="i386"
+fi
+if [ -z "$privateKey" ]; then
+    exitReason "AWS EC2 Keypair not specified. Did you set the \"privateKey\" parameter in your config?" 1
+fi
+if [ -z "$privateKeyLocation" ]; then
+    exitReason "Private key file not specified. Did you set the \"privateKeyLocation\" parameter in your config?" 1
+fi
+if [ -z "$userId" ]; then
+    exitReason "AWS user ID not specified. Did you set the \"userId\" parameter in your config?" 1
+fi
+if [ -z "$certFile" ]; then
+    exitReason "AWS certificate file not specified. Did you set the \"certFile\" parameter in your config?" 1
+fi
+if [ -z "$pkFile" ]; then
+    exitReason "AWS private key file not specified. Did you set the \"pkFile\" parameter in your config?" 1
+fi
+if [ -z "$accessKey" ]; then
+    exitReason "AWS S3 access key not specified. Did you set the \"accessKey\" parameter in your config?" 1
+fi
+if [ -z "$secretKey" ]; then
+    exitReason "AWS S3 secret key not specified. Did you set the \"secretKey\" parameter in your config?" 1
+fi
+if [ -z "$instanceConversionScript" ]; then
+    instanceConversionScript="./instance-to-ebs-ami.sh"
+fi
+if [ -z "$doesEnd" ]; then
+    doesEnd="0"
+fi
+if [ -z "$startPoint" ]; then
+    startPoint="${buildAwsFuncs[0]}"
+    doesEnd="0"
+fi
+if [ -z "$terminateOnFailure" ]; then
+    terminateOnFailure=1
+fi
+if [ -z "$s3Cmd" ]; then
+    exitReason "Location of s3Cmd not specified. Did you set the \"s3Cmd\" parameter in your config?" 1
+fi
+
+# filename for image to package and deploy to AWS EC2
+# e.g. vmoracleOneFile.raw
+imageFile=$1
+if [ -z "$imageFile" ]; then
+    echo "No image file specified\n"
+    usage
+    exit 1
+fi
+
+
+# Inform the user of their settings
+cat << EOF
+Deploying your image to AWS with the following parameters:
+    image		    =	$imageFile
+    prefix		    =	$prefix
+    region		    =	$region
+    location		    =	$location
+    local destination	    =	$localDest
+    architecture	    =	$arch
+    private key		    =	$privateKey
+    private key location    =	$privateKeyLocation
+    user id		    =	$userId
+    certificate file	    =	$certFile
+    pk file		    =	$pkFile
+    access key		    =	$accessKey
+    secret key		    =	$secretKey
+    conversion script	    =	$instanceConversionScript
+    start point		    =	$startPoint
+    run one function	    =	$doesEnd
+
+EOF
+
+if [[ $autoAccept -ne 1 ]]; then
+    read -r -p "Is this correct [y/N]? " acceptSettings
+    if [[ ! $acceptSettings =~ "^[yY](es)?$" ]]; then
+	echo "Exiting..."
+        exit 1
+    fi
+fi
+
+
+#################
+# Start Program	#
+#################
+
+# Begin program execution
+main
