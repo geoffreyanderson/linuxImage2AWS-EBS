@@ -1,0 +1,67 @@
+# Configuration options to be loaded by default.
+# If you don't want to configure something, comment it out!
+
+# Location of the s3cmd from http://s3tools.org . 
+# This is needed to manage the S3 buckets during the execution of the script.
+s3Cmd="/usr/bin/s3cmd"
+
+# Prefix for the directory and file names of the locally created files for EC2 
+# and also be the s3 bucket to be used.  Note: This should NOT containt underscores
+# (use dashes instead) and should not be empty.
+# Default: "awsImage-$(date +%m%d%y-%H%M)" (e.g. awsImage-04112011)
+prefix="myImages-$(date +%m%d%y-%H%M)"
+
+# The AWS Region to deploy on.  Ensure that this region matches the location you choose.
+# Locations:		EU       , US       , us-west-1, ap-southeast-1, ap-northeast-1
+# Associted Regions:	eu-west-1, us-east-1, us-west-1, ap-southeast-1, ap-northeast-1
+# Default: us-east-1
+region="us-east-1"
+
+# AWS Location to deploy on. Ensure that this location matches the region you choose.
+# Locations:		EU       , US       , us-west-1, ap-southeast-1, ap-northeast-1
+# Associted Regions:	eu-west-1, us-east-1, us-west-1, ap-southeast-1, ap-northeast-1
+# Default: US
+location="US"
+
+# Local destination to store the generated files from the base image. You can reference
+# the prefix specified above
+# Default: $HOME/awsStorage/$prefix
+localDest="$HOME/imageFiles/$prefix"
+
+# Architecture of the image being deployed. This MUST be "i386" or "x64"
+# Default: i386
+arch="i386"
+
+# Private key for SSH connections. This should be the name of one of your keypairs.
+# Can be discovered by running "ec2-describe-keypairs"
+# Default: none -- program will fail to run without this.
+privateKey="getting-started"
+
+# Location of the *.pem file associated with the key pair specified for the "privateKey"
+# variable.
+# Default: none -- program will fail to run without this.
+privateKeyLocation="$HOME/getting-started.pem"
+
+# User ID for the AWS account to deploy your image to.
+# Default: none -- program will fail to run without this.
+userId="111111111111"
+
+# Private certificate file for signing.
+# Default: none -- program will fail to run without this.
+certFile="$HOME/.ec2/cert-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.pem"
+
+# Private key file for signing
+# Default: none -- program will fail to run without this.
+pkFile="$HOME/.ec2/pk-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.pem"
+
+# Access Key for account
+# Default: none -- program will fail to run without this.
+accessKey="XXXXXXXXXXXXXXXXXXXX"
+
+# Secret Key for account
+# Default: none -- program will fail to run without this.
+secretKey="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# Location of instance conversion script
+# Default: ./instance-to-ebs-ami.sh
+instanceConversionScript="$HOME/imageFiles/instance-to-ebs-ami.sh"
