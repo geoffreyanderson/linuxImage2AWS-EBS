@@ -1,16 +1,39 @@
 #!/bin/bash
-# Create the Bundle
 
-# DEPENDENCIES:
-# s3cmd: http://s3tools.org/download
+#########################################################################
+#									#
+# buildaws - A BASH script to push an image file with a Linux operating #
+#   system to Amazon's Web Service cloud infrastructure as both an	#
+#   S3-backed instance and EBS-backed instance.				#
+#									#
+# Author:								#
+#   Geoffrey Anderson <geoff@geoffreyanderson.net>			#
+#   Copyright 2011, no rights reserved.					#
+#									#
+#########################################################################
+# This program is free software: you can redistribute it and/or modify	#
+# it under the terms of the GNU General Public License as published by	#
+# the Free Software Foundation, either version 3 of the License, or	#
+# (at your option) any later version.					#
+# 									#
+# This program is distributed in the hope that it will be useful,	#
+# but WITHOUT ANY WARRANTY; without even the implied warranty of	#
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the		#
+# GNU General Public License for more details.				#
+# 									#
+# You should have received a copy of the GNU General Public License	#
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.	#
+#########################################################################
+
 
 #################
 # Parameters	#
 #################
 
-# Location of Tim Kay's AWS perl script. This is needed to manage the S3 buckets
-# during the execution of the script.
-s3Cmd=/home/geoff/apps/bin/s3cmd
+# Location of s3cmd from S3 tools. This is needed to manage the S3 buckets
+# during the execution of the script. This should be set in the user's
+# config file.
+s3Cmd=
 
 # Array containing a list of all functions in this script that can
 # be executed.  
@@ -28,46 +51,66 @@ buildAwsFuncs[10]="createSnapshotFromVolume"
 buildAwsFuncs[11]="registerEbsAmi"
 buildAwsFuncs[12]="removeInstanceAndVolume" 
 
-# Prefix for the directory and file names of the locally created files for EC2 
+# Prefix for the directory and file names of the locally created files for EC2
 # and also be the s3 bucket to be used.  Note: This should NOT containt underscores
-# (use dashes instead) and should not be empty. In the case of an empty string, 
-# auto generate "dblaboracle-mmddyyyy-hhmm"
-# (e.g. dblaboracle-04112011)
+# (use dashes instead) and should not be empty.
+# Default: "awsImage-$(date +%m%d%y-%H%M)" (e.g. awsImage-04112011)
 prefix=
 
-# Region on AWS EC2 to deploy the image on. Default this to us-east-1
-# (may need to consider us-east-1{a,b,c,d} for continued work to convert the instance to EBS)
+# The AWS Region to deploy on.  Ensure that this region matches the location you choose.
+# Locations:            EU       , US       , us-west-1, ap-southeast-1, ap-northeast-1
+# Associted Regions:    eu-west-1, us-east-1, us-west-1, ap-southeast-1, ap-northeast-1
+# Default: us-east-1
 region=
 
-# Local destination to store the generated files from the base image. This depends on the 
-# prefix specified above
+# Local destination to store the generated files from the base image. You can reference
+# the prefix specified above
+# Default: $HOME/awsStorage/$prefix
 localDest=
 
-# Architecture we're building. Generally i386 unless a 64-bit image is used
+# Architecture of the image being deployed. This MUST be "i386" or "x64"
+# Default: i386
 arch=
 
-# Location to upload bundle. This can probably be calculated by using sed on the region then
-# making it caps. Alternatively, maybe have a lookup table/file with this info? >:{ 
-# possible locations: EU       , US	  , us-west-1, ap-southeast-1, ap-northeast-1 
-# associated regions: eu-west-1, us-east-1, us-west-1, ap-southeast-1, ap-northeast-1
+# AWS Location to deploy on. Ensure that this location matches the region you choose.
+# making it caps. Alternatively, maybe have a lookup table/file with this info? >:{
+# Locations:            EU       , US       , us-west-1, ap-southeast-1, ap-northeast-1
+# Associted Regions:    eu-west-1, us-east-1, us-west-1, ap-southeast-1, ap-northeast-1
+# Default: US
 location=
 
-# Private key for SSH connections
+# Private key for SSH connections. This should be the name of one of your keypairs.
+# Can be discovered by running "ec2-describe-keypairs"
+# Default: none -- program will fail to run without this.
 privateKey=
+
+# Location of the *.pem file associated with the key pair specified for the "privateKey"
+# variable.
+# Default: none -- program will fail to run without this.
 privateKeyLocation=
 
-# User ID for the AWS account to deploy this image to.
+# User ID for the AWS account to deploy your image to.
+# Default: none -- program will fail to run without this.
 userId=
-# Private certificate file for signing
+
+# Private certificate file for signing.
+# Default: none -- program will fail to run without this.
 certFile=
+
 # Private key file for signing
+# Default: none -- program will fail to run without this.
 pkFile=
+
 # Access Key for account
+# Default: none -- program will fail to run without this.
 accessKey=
+
 # Secret Key for account
+# Default: none -- program will fail to run without this.
 secretKey=
 
 # Location of instance conversion script
+# Default: ./instance-to-ebs-ami.sh
 instanceConversionScript=
 
 # Debug verbosity
@@ -80,7 +123,6 @@ startPoint=
 # or not. Valid values are 1 or 0
 doesEnd=
 
-# TODO: comment these variables. These are the other "global" variables needed by the functions
 
 # Holds the AMI number returned during instance-store AMI registration. This will be set
 # by the script
@@ -115,6 +157,7 @@ kernelId=
 
 # Ramdisk ID to use when bundling image
 ramdiskId=
+
 
 #############
 # Functions #
@@ -208,6 +251,8 @@ OPTIONS:
 EOF
 }
 
+# TODO: ensure this prints ALL user-specified variables. This should be called before running, and upon exit (successful or not). 
+# TODO: if this is called upon unsuccessful exit, should print any additionally set variables (e.g. instanceId, amiNum, etc.)
 displayVariables()
 {
     # Inform the user of their settings
@@ -231,8 +276,6 @@ Deploying your image to AWS with the following parameters:
     run one function	    =	$doesEnd
 
 EOF
-
-
 }
 
 # TODO: add function(ality) to print "important information" to user when script exits. E.g., if script fails/exits after uploading bundle, print all variables needed to continue the process from another point. (This could probabaly just be the same dumping of variables from the start of the script when prompting the user to run.)
@@ -272,7 +315,9 @@ awsFuncExists()
 }
 
 
-# execute a given command a specified number of times
+# TODO: this function may be modified or refactored altogether to account for the "password:" prompt from SSH if a deployed instance isn't setup with keys properly. This is so the script doesn't hang waiting for input from STDIN (which in turn, leaves an instance running).
+# Execute a given command a specified number of times. This is usually called
+# when making more than one attempt to SSH into an instance.
 limitedRetry()
 {
     if [[ $# -ne 4 ]]; then
@@ -304,8 +349,9 @@ limitedRetry()
     return $exitStatus
 }
 
+
+# TODO: should consider adding a counter that gets multiplied by the sleep time. If that value surpasses a certain threshold (e.g. 15min), then the script should error out. Alternatively, just store a date and compare it upon loop iterations to see if a threshold is violated.
 # Execute a given command until a threshold is met -- used for watching an incremental process
-# TODO: should consider adding a counter that gets multiplied by the sleep time. If that value surpasses a certain threshold (e.g. 15min), then the script should error out.
 monitorEC2Command()
 {
     if [[ $# -ne 7 ]]; then
@@ -345,6 +391,8 @@ monitorEC2Command()
     return $failed
 }
 
+# Will check an instance for console output to be printed to STDOUT and a file.
+# This can be used to debug errors in an image.
 checkForConsoleOutput()
 {
     echo "Checking for console output..."
@@ -484,6 +532,7 @@ startInstance()
     # start the instance using the keypair passed in
     echo "------------------------"
     echo "Attempting to launch instance of \"$amiNum\" with private key \"$privateKey\" on the \"$region\" region"
+    # TODO: add parameter to tweak the instance-type.
     runInstance=$(ec2-run-instances $amiNum --instance-type m1.small -k $privateKey --region $region)
 
     # Extract the instance id from the ec2-run-instances command
@@ -533,9 +582,9 @@ startInstance()
 # (global changes: none)
 testRunningInstance()
 {
-    # now try to connect with the keypair. 
+    # now try to connect with the keypair the instance was launched with. 
     # if it fails, you'll get something like this:
-    # ssh: connect to host ec2-50-17-103-5.compute-1.amazonaws.com port 22:
+    # ssh: connect to host ec2-xx-xx-xx-xx.compute-1.amazonaws.com port 22:
     # Connection timed out
 
     echo "------------------------"
@@ -615,6 +664,7 @@ createVolume()
     echo "Preparing to setup a volume for the script to operate on."
     echo "-->Creating a volume..."
     
+    # TODO: should allow for custom volume size to b especified
     # Arbitrarily make a 20GB volume. May change this to a variable in the future
     local createVolume=$(ec2-create-volume --size 20 --availability-zone $availZone)
     local createVolumeExitStatus="$?"
@@ -1099,6 +1149,7 @@ fi
 
 
 # Inform the user of their settings
+# TODO: When the displayVariables() function is complete, replace the following with it
 cat << EOF
 Deploying your image to AWS with the following parameters:
     image		    =	$imageFile

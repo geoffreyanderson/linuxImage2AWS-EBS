@@ -1,1 +1,17 @@
+Author: Geoffrey Anderson <geoff@geoffreyanderson.net>
+
+Description:
 A BASH script to push an image file with a Linux operating system to Amazon's Web Service cloud infrastructure as both an S3-backed instance and EBS-backed instance.
+
+
+Requirements:
+-AWS EC2 AMI tools - http://aws.amazon.com/developertools/368
+-S3 tools s3cmd - http://s3tools.org/s3cmd
+
+Usage:
+Edit the sample config file (buildawsrc.exapmle) to hold the appropriate values for your AWS account and then copy it to your home directory as ".buildawsrc".  Then call the buildaws script from the command-line with the necessary parameters.
+
+    e.g. $ cp buildawsrc.example $HOME/.buildawsrc
+	 $ buildaws --prefix my-custom-prefix --kernel aki-f5c1219c $HOME/images/deploy.img
+
+
