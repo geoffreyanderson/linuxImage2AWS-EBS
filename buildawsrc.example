@@ -26,7 +26,7 @@ location="US"
 # Local destination to store the generated files from the base image. You can reference
 # the prefix specified above
 # Default: $HOME/awsStorage/$prefix
-localDest="$HOME/imageFiles/$prefix"
+localDest="$HOME/imageFiles/"
 
 # Architecture of the image being deployed. This MUST be "i386" or "x64"
 # Default: i386

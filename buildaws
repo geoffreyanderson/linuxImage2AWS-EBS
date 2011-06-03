@@ -1096,6 +1096,8 @@ if [ -z "$region" ]; then
 fi
 if [ -z "$localDest" ]; then
     localDest="$HOME/awsStorage/$prefix"
+else
+    localDest="$localDest/$prefix"
 fi
 if [ -z "$arch" ]; then
     arch="i386"
