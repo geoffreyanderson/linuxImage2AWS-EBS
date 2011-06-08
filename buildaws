@@ -1014,11 +1014,7 @@ while [[ $1 == -* ]]; do
 		echo "$1 requires an argument" 2>&1
 	    fi ;;
 	--one-func)
-	    if (($# > 1)); then
-		doesEnd="$2"; shift 2
-	    else
-		echo "$1 requires an argument" 2>&1
-	    fi ;;
+	    doesEnd="1"; shift 1 ;;
 	--conversion-script-location)
 	    if (($# > 1)); then
 		instanceConversionScript="$2"; shift 2
