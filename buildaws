@@ -358,8 +358,8 @@ displayVariables()
     EBS-backed AMI number		=   $ebsAmiNum"
     fi
 
-    # Inform the user of their settings
-    echo -e "$variableOutputString"
+    # Inform the user of their settings (and strip out empty-valued parameters with sed)
+    echo -e "$variableOutputString" | sed '/^.*=\s\s*$/d'
 }
 
 # TODO: this function may be modified or refactored altogether to account for the "password:" prompt from SSH if a deployed instance isn't setup with keys properly. This is so the script doesn't hang waiting for input from STDIN (which in turn, leaves an instance running).
