@@ -146,6 +146,10 @@ instanceId=
 # instance-store's filesystem. This will be set by the script.
 snapId=
 
+# Holds the AMI number for the EBS-backed AMI that is registered using "$snapId". This
+# will be set by the script
+ebsAmiNum=
+
 # Determines if script execution should terminate any running instances on failure
 terminateOnFailure=1
 
@@ -157,6 +161,9 @@ kernelId=
 
 # Ramdisk ID to use when bundling image
 ramdiskId=
+
+# Placeholder for the current function being executed.
+currentFunction=
 
 
 #############
@@ -251,32 +258,6 @@ OPTIONS:
 EOF
 }
 
-# TODO: ensure this prints ALL user-specified variables. This should be called before running, and upon exit (successful or not). 
-# TODO: if this is called upon unsuccessful exit, should print any additionally set variables (e.g. instanceId, amiNum, etc.)
-displayVariables()
-{
-    # Inform the user of their settings
-    cat << EOF
-Deploying your image to AWS with the following parameters:
-    image		    =	$imageFile
-    prefix		    =	$prefix
-    region		    =	$region
-    location		    =	$location
-    local destination	    =	$localDest
-    architecture	    =	$arch
-    private key		    =	$privateKey
-    private key location    =	$privateKeyLocation
-    user id		    =	$userId
-    certificate file	    =	$certFile
-    pk file		    =	$pkFile
-    access key		    =	$accessKey
-    secret key		    =	$secretKey
-    conversion script	    =	$instanceConversionScript
-    start point		    =	$startPoint
-    run one function	    =	$doesEnd
-
-EOF
-}
 
 # TODO: add function(ality) to print "important information" to user when script exits. E.g., if script fails/exits after uploading bundle, print all variables needed to continue the process from another point. (This could probabaly just be the same dumping of variables from the start of the script when prompting the user to run.)
 # TODO: add a severity parameter to the exitReason() function so that certain errors can have a higher severity -- e.g. failing to get instanceID should have the highest error severity because it means there may be an instance running that the script can't terminate -- maybe this fires off an emergency e-mail.
@@ -290,6 +271,8 @@ exitReason()
     fi
     echo "-----------------------"
     echo -e "Error: $1"
+    echo "Dumping list of start up parameters:"
+    displayVariables
     echo "Exiting..."
     exit $2
 }
@@ -314,6 +297,70 @@ awsFuncExists()
     return -1
 }
 
+# TODO: ensure this prints ALL user-specified variables. This should be called before running, and upon exit (successful or not). 
+# TODO: if this is called upon unsuccessful exit, should print any additionally set variables (e.g. instanceId, amiNum, etc.)
+displayVariables()
+{
+    # Begin constructing output string
+    variableOutputString="\nDeploying your image to AWS with the following parameters:"
+    variableOutputString="${variableOutputString}
+    image				=   $imageFile
+    --prefix				=   $prefix
+    --region				=   $region
+    --location				=   $location
+    --destination			=   $localDest
+    --arch				=   $arch
+    --private-key			=   $privateKey
+    --private-key-location		=   $privateKeyLocation
+    --user-id				=   $userId
+    --cert-file				=   $certFile
+    --pk-file				=   $pkFile
+    --access-key			=   $accessKey
+    --secret-key			=   $secretKey
+    --conversion-script-location	=   $instanceConversionScript
+    --verbose				=   $verbosity
+    --start				=   $startPoint
+    --one-func				=   $doesEnd
+    --no-terminate			=   $terminateOnFailure
+    -y (auto accept)			=   $autoAccept
+    --kernel				=   $kernelId
+    --ramdisk				=   $ramdiskId"
+
+    # Get the index of the current function to check against for appending
+    # adiditonal variables to the output string
+    awsFuncExists "$currentFunction"
+    currentFunctionIndex="$?"
+
+    # Append variables initialized in "register" function
+    if [[ $currentFunctionIndex -ge 2 ]]; then
+	variableOutputString="${variableOutputString}
+    --ami				=   $amiNum
+    --public-dns			=   $publicDNS
+    avail-zone				=   $availZone
+    --instance-id			=   $instanceId"
+    fi
+
+    # Append variables initialized in "createVolume" function
+    if [[ $currentFunctionIndex -ge 6 ]]; then
+	variableOutputString="${variableOutputString}
+    --vol-id				=   $volId"
+    fi
+
+    # Append variables initialized in "createSnapshotFromVolume" function
+    if [[ $currentFunctionIndex -ge 10 ]]; then
+	variableOutputString="${variableOutputString}
+    --snap-id				=   $snapId"
+    fi
+
+    # Append variables initialized in "createSnapshotFromVolume" function
+    if [[ $currentFunctionIndex -ge 11 ]]; then
+	variableOutputString="${variableOutputString}
+    EBS-backed AMI number		=   $ebsAmiNum"
+    fi
+
+    # Inform the user of their settings
+    echo -e "$variableOutputString"
+}
 
 # TODO: this function may be modified or refactored altogether to account for the "password:" prompt from SSH if a deployed instance isn't setup with keys properly. This is so the script doesn't hang waiting for input from STDIN (which in turn, leaves an instance running).
 # Execute a given command a specified number of times. This is usually called
@@ -845,7 +892,7 @@ registerEbsAmi()
     if [ -z "$ebsAmiNum" ]; then
     	exitReason "Failed to register AMI. Output from ec2-register:\n$(echo "$ebsAmiRegister")" 23
     else
-    	echo "-->Registered ebs ami: $ebsAmiRegister"
+    	echo "-->Registered ebs ami: $ebsAmiNum"
     fi
 
     echo -e "------------------------\n"
@@ -891,12 +938,12 @@ main()
 	# User didn't specify to run only the one function. Cascade through the rest of the functions.
 	for (( mainIteration=$startPointIndex; mainIteration<${#buildAwsFuncs[@]}; mainIteration++))
 	do
+	    currentFunction="${buildAwsFuncs[$mainIteration]}"
 	    echo "Running ${buildAwsFuncs[$mainIteration]}():"
 	    ${buildAwsFuncs[$mainIteration]}
 	done
     fi
 }
-
 
 # Bring information from the config file first. 
 # Command-line parameters should override them this way
@@ -1127,6 +1174,7 @@ if [ -z "$doesEnd" ]; then
 fi
 if [ -z "$startPoint" ]; then
     startPoint="${buildAwsFuncs[0]}"
+    currentFunction="$startPoint"
     doesEnd="0"
 fi
 if [ -z "$terminateOnFailure" ]; then
@@ -1145,29 +1193,8 @@ if [ -z "$imageFile" ]; then
     exit 1
 fi
 
-
 # Inform the user of their settings
-# TODO: When the displayVariables() function is complete, replace the following with it
-cat << EOF
-Deploying your image to AWS with the following parameters:
-    image		    =	$imageFile
-    prefix		    =	$prefix
-    region		    =	$region
-    location		    =	$location
-    local destination	    =	$localDest
-    architecture	    =	$arch
-    private key		    =	$privateKey
-    private key location    =	$privateKeyLocation
-    user id		    =	$userId
-    certificate file	    =	$certFile
-    pk file		    =	$pkFile
-    access key		    =	$accessKey
-    secret key		    =	$secretKey
-    conversion script	    =	$instanceConversionScript
-    start point		    =	$startPoint
-    run one function	    =	$doesEnd
-
-EOF
+displayVariables
 
 if [[ $autoAccept -ne 1 ]]; then
     read -r -p "Is this correct [y/N]? " acceptSettings
