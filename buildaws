@@ -943,6 +943,9 @@ main()
 	    ${buildAwsFuncs[$mainIteration]}
 	done
     fi
+
+    echo "Displaying list of variables from this script execution:"
+    displayVariables
 }
 
 # Bring information from the config file first. 
