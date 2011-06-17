@@ -475,9 +475,17 @@ bundle()
     # TODO: tweak the conditional so the command it built dynamically -- save on duplicate code
     # Bundle the specified image into the local destination
     if [ -z "$kernelId" ]; then
-	ec2-bundle-image --image $imageFile --prefix $prefix --cert $certFile --privatekey $pkFile --user $userId --destination $localDest --arch $arch 
+	if [ -z "$ramdiskId" ]; then
+	    ec2-bundle-image --image $imageFile --prefix $prefix --cert $certFile --privatekey $pkFile --user $userId --destination $localDest --arch $arch 
+	else
+	    ec2-bundle-image --image $imageFile --prefix $prefix --cert $certFile --privatekey $pkFile --user $userId --destination $localDest --arch $arch --ramdisk $ramdiskId
+	fi
     else
-	ec2-bundle-image --image $imageFile --prefix $prefix --cert $certFile --privatekey $pkFile --user $userId --destination $localDest --arch $arch --kernel $kernelId
+	if [ -z "$ramdiskId" ]; then
+	    ec2-bundle-image --image $imageFile --prefix $prefix --cert $certFile --privatekey $pkFile --user $userId --destination $localDest --arch $arch --kernel $kernelId
+	else
+	    ec2-bundle-image --image $imageFile --prefix $prefix --cert $certFile --privatekey $pkFile --user $userId --destination $localDest --arch $arch --kernel $kernelId --ramdisk $ramdiskId
+	fi
     fi
 
     # TODO: need to check all exit statuses for ec2-bundle-image to see if certain errors can be recovered/continued from.
@@ -857,7 +865,7 @@ createSnapshotFromVolume()
     echo "Preparing to create a snapshot from volume \"$volId\""
 
     # Snapshot the volume
-    local createSnapshot=$(ec2-create-snapshot $volId)
+    local createSnapshot=$(ec2-create-snapshot --description "Created by buildaws from instance-store ami $amiNum" $volId)
     snapId=$(echo $createSnapshot | awk '{print $2}')
     echo "-->Creating snapshot \"$snapId\""
     snapshotDescription=$(mktemp)
@@ -887,7 +895,19 @@ registerEbsAmi()
     echo "Registering a new EBS-backed AMI with \"$snapId\""
 
     # Register a new instance with the volume
-    ebsAmiRegister=$(ec2-register --snapshot $snapId --description="EBS version of $prefix" --name="EBS-$prefix" --architecture $arch --root-device-name /dev/sda1)
+    if [ -z "$kernelId" ]; then
+	if [ -z "$ramdiskId" ]; then
+	    ebsAmiRegister=$(ec2-register --snapshot $snapId --description="EBS version of $prefix" --name="EBS-$prefix" --architecture $arch --root-device-name /dev/sda1)
+	else
+	    ebsAmiRegister=$(ec2-register --snapshot $snapId --description="EBS version of $prefix" --name="EBS-$prefix" --architecture $arch --root-device-name /dev/sda1 --ramdisk $ramdiskId)
+	fi
+    else
+	if [ -z "$ramdiskId" ]; then
+	    ebsAmiRegister=$(ec2-register --snapshot $snapId --description="EBS version of $prefix" --name="EBS-$prefix" --architecture $arch --root-device-name /dev/sda1 --kernel $kernelId)
+	else
+	    ebsAmiRegister=$(ec2-register --snapshot $snapId --description="EBS version of $prefix" --name="EBS-$prefix" --architecture $arch --root-device-name /dev/sda1 --kernel $kernelId --ramdisk $ramdiskId)
+	fi
+    fi
     ebsAmiNum=$(echo $ebsAmiRegister | awk '{print $2}')
     if [ -z "$ebsAmiNum" ]; then
     	exitReason "Failed to register AMI. Output from ec2-register:\n$(echo "$ebsAmiRegister")" 23
@@ -1116,7 +1136,6 @@ while [[ $1 == -* ]]; do
 		echo "$1 requires an argument" 2>&1
 	    fi ;;
 	--ramdisk)
-	    # TODO: this parameter is currently unused.
 	    if (($# > 1)); then
 		ramdiskId="$2"; shift 2
 	    else
