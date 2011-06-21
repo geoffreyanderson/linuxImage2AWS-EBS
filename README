@@ -4,14 +4,22 @@ Description:
 A BASH script to push an image file with a Linux operating system to Amazon's Web Service cloud infrastructure as both an S3-backed instance and EBS-backed instance.
 
 
-Requirements:
+Dependencies:
 -AWS EC2 AMI tools - http://aws.amazon.com/developertools/368
 -S3 tools s3cmd - http://s3tools.org/s3cmd
 
 Usage:
 Edit the sample config file (buildawsrc.exapmle) to hold the appropriate values for your AWS account and then copy it to your home directory as ".buildawsrc".  Then call the buildaws script from the command-line with the necessary parameters.
 
-    e.g. $ cp buildawsrc.example $HOME/.buildawsrc
-	 $ buildaws --prefix my-custom-prefix --kernel aki-f5c1219c $HOME/images/deploy.img
+    e.g. 
+        $ cp buildawsrc.example $HOME/.buildawsrc
+        $ buildaws --prefix my-custom-prefix --kernel aki-f5c1219c $HOME/images/deploy.img
 
-
+Note:
+Ensure that your image file has the proper kernel modules for your architecture from http://s3.amazonaws.com/ec2-downloads/ and that you specify the "--kernel" and "--ramdisk" parameters with the appropriate AKI and ARI from amazon.
+    
+    e.g. My image file has the 2.6.18 kernel installed and is the i386 architecture, so I need to extract http://s3.amazonaws.com/ec2-downloads/ec2-modules-2.6.18-xenU-ec2-v1.0-i686.tgz into my image file and depmod those modules. Then I need to get amazon's AKI and ARI for that kernel module:
+            $ ec2-describe-images -o amazon --region us-east-1 | grep -E "(vmlinuz|initrd)-2\.6\.18-xenU-ec2-v1\.0\.i386" | awk '{print $2}'
+    
+        and now I can run the buildaws script with these parameters:
+            $ buildaws --kernel aki-9b00e5f2 --ramdisk ari-67b95e0e $HOME/images/deploy.img 
