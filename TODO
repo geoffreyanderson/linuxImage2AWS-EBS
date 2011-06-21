@@ -1,0 +1,15 @@
+-script will hang if there's no console output. -- should add a timer to this loop.
+--add timeouts to other areas of the script execution (e.g. SSH loops, etc.)
+-see about making variables read from config file that are dependent on one another get built correctly (e.g. localDest uses $prefix. Make sure it uses a prefix passed on the cmdline)
+-add "force" flag to force operations to continue (e.g. existing S3 bucket, etc.)
+-check if password prompt occurs while testing SSH connection
+-research migrating S3 buckets between locations (might be faster than deploying image for each region?)
+--possible to use a conditional in an expect script to check?
+---http://stackoverflow.com/questions/1538444/using-conditional-statements-inside-expect
+--make client run non-interactively?
+--look into "func"
+-add check after running instance-to-ebs-ami.sh on remote instance
+--pull the output file and check that it isn't empty?
+-finish variable dependency stuff
+-make script load defaults for variables from config file (and fail if it can't!)
+-make it so an existing instance-store AMI can be re-deployed as an instance store in another zone?
